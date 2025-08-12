@@ -14,3 +14,6 @@ REPORT
 
 ----
 
+![arch](arch.png)
+
+![emr](emr.jpeg)

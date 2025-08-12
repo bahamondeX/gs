@@ -32,12 +32,11 @@ async def scan_devices():
             print(json.dumps({"address": device.address, "name": device.name}))
         await asyncio.sleep(5)  # scan interval
 
-
-async def main():
+async def run():
     # Create tasks for HTTP hosts + BLE scanner
     tasks = [scan_devices()] + [run_http(host) for host in HOSTS]
     await asyncio.gather(*tasks)
 
 
-if __name__ == "__main__":
-    asyncio.run(main())
+def main():
+    asyncio.run(run())

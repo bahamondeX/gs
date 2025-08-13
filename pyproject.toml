@@ -3,12 +3,18 @@ requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "gs"
-version = "0.0.1"
+name = "anti_gaslighting"
+version = "0.0.4"
 authors = [
-  { name="Oscar Bahamonde", email="oscar.bahamonde.dev@gmail.com" },
+  { name="Oscar Bahamonde", email="oscar.bahamonde@pucp.pe" },
 ]
-dependencies = ["bleak"]
+dependencies = [
+    "bleak",
+    "click>=8.1.8",
+    "groq>=0.11.0",
+    "pyaudio>=0.2.14",
+    "rich>=13.8.1",
+]
 description = "A small example package"
 readme = "README.md"
 requires-python = ">=3.7"
@@ -19,4 +25,4 @@ classifiers = [
 ]
 
 [project.scripts]
-gs = "gs.gs:main"
+gs = "anti_gaslighting.gs:main"

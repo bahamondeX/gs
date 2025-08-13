@@ -2,30 +2,19 @@ import asyncio
 import json
 import tempfile
 import threading
+import typing as tp
 import wave
+from contextlib import nullcontext
 from datetime import datetime
 from pathlib import Path
 from subprocess import check_output, run
 
 import click
+import pyaudio
+from bleak import BleakScanner
 from groq import Groq
-
-try:
-    from bleak import BleakScanner
-except ImportError:
-    BleakScanner = None
-
-try:
-    import pyaudio
-except ImportError:
-    pyaudio = None
-
-from rich import print as rprint
 from rich.console import Console
-from rich.live import Live
 from rich.panel import Panel
-from rich.progress import Progress, SpinnerColumn, TextColumn
-from rich.syntax import Syntax
 from rich.table import Table
 
 console = Console()
@@ -33,15 +22,16 @@ console = Console()
 # Config
 HOSTS_FILE = Path("hosts")
 if HOSTS_FILE.exists():
-    HOSTS = HOSTS_FILE.read_text().splitlines()
+    HOSTS: list[str] = HOSTS_FILE.read_text().splitlines()
 else:
-    HOSTS = []
+    HOSTS: list[str] = []
 
 # Audio settings
 CHUNK = 1024
-FORMAT = pyaudio.paInt16 if pyaudio else None
-CHANNELS = 1
+FORMAT = pyaudio.paInt16
 RATE = 16000
+CHANNELS = 1
+gq = Groq()
 
 
 class AudioRecorder:
@@ -49,11 +39,6 @@ class AudioRecorder:
         if not pyaudio:
             raise ImportError("pyaudio not installed")
         self.p = pyaudio.PyAudio()
-        self.stream = None
-        self.frames = []
-        self.recording = False
-
-    def start(self):
         self.stream = self.p.open(
             format=FORMAT,
             channels=CHANNELS,
@@ -61,6 +46,10 @@ class AudioRecorder:
             input=True,
             frames_per_buffer=CHUNK,
         )
+        self.frames: list[tp.Any] = []
+        self.recording = False
+
+    def start(self):
         self.recording = True
         self.frames = []
 
@@ -96,7 +85,7 @@ class AudioRecorder:
 @click.group()
 @click.option("--json-output", is_flag=True, help="Output in JSON format")
 @click.pass_context
-def main(ctx, json_output):
+def cli(ctx: click.Context, json_output: object):
     """🚀 Multi-purpose CLI Tool for Network, BLE & Audio Operations"""
     ctx.ensure_object(dict)
     ctx.obj["json"] = json_output
@@ -109,57 +98,46 @@ def main(ctx, json_output):
 async def arun_http(host: str, n: int, c: int, json_mode: bool = False):
     """Run HTTP load test"""
     loop = asyncio.get_running_loop()
+    while True:
+        try:
+            result = await loop.run_in_executor(
+                None,
+                check_output,
+                ["oha", "-n", f"{n}", "-c", f"{c}", "--json", f"http://{host}"],
+            )
+            data = json.loads(result)
 
-    with Progress(
-        SpinnerColumn(),
-        TextColumn("[progress.description]{task.description}"),
-        console=console,
-        disable=json_mode,
-    ) as progress:
-        task = progress.add_task(f"[cyan]Load testing {host}...", total=None)
-
-        while True:
-            try:
-                result = await loop.run_in_executor(
-                    None,
-                    check_output,
-                    ["oha", "-n", f"{n}", "-c", f"{c}", "--json", f"http://{host}"],
+            if json_mode:
+                print(
+                    json.dumps(
+                        {
+                            "host": host,
+                            "status": "success",
+                            "rps": data.get("rps", {}).get("mean"),
+                            "latency_avg": data.get("latency", {}).get("mean"),
+                            "success_rate": data.get(
+                                "status_code_distribution", {}
+                            ).get("200", 0)
+                            / n
+                            * 100,
+                        }
+                    )
                 )
-                data = json.loads(result)
+            else:
+                console.print(
+                    f"[green]✓[/green] {host} | RPS: {data.get('rps', {}).get('mean', 0):.2f} | Latency: {data.get('latency', {}).get('mean', 0):.2f}ms"
+                )
 
-                if json_mode:
-                    print(
-                        json.dumps(
-                            {
-                                "host": host,
-                                "status": "success",
-                                "rps": data.get("rps", {}).get("mean"),
-                                "latency_avg": data.get("latency", {}).get("mean"),
-                                "success_rate": data.get(
-                                    "status_code_distribution", {}
-                                ).get("200", 0)
-                                / n
-                                * 100,
-                            }
-                        )
-                    )
-                else:
-                    console.print(
-                        f"[green]✓[/green] {host} | RPS: {data.get('rps', {}).get('mean', 0):.2f} | Latency: {data.get('latency', {}).get('mean', 0):.2f}ms"
-                    )
+        except Exception as e:
+            if json_mode:
+                print(json.dumps({"host": host, "status": "error", "error": str(e)}))
+            else:
+                console.print(f"[red]✗[/red] {host} -> {e}")
 
-            except Exception as e:
-                if json_mode:
-                    print(
-                        json.dumps({"host": host, "status": "error", "error": str(e)})
-                    )
-                else:
-                    console.print(f"[red]✗[/red] {host} -> {e}")
-
-            await asyncio.sleep(5)
+        await asyncio.sleep(5)
 
 
-@main.command()
+@cli.command()
 @click.argument("host")
 @click.option("-n", "--requests", default=10000, help="Number of requests")
 @click.option("-c", "--concurrency", default=100, help="Concurrent connections")
@@ -220,14 +198,14 @@ async def scan_ble_devices(json_mode: bool = False):
         await asyncio.sleep(5)
 
 
-@main.command()
+@cli.command()
 @click.pass_context
-def ble(ctx):
+def ble(ctx: click.Context):
     """📡 Scan for Bluetooth LE devices"""
     asyncio.run(scan_ble_devices(ctx.obj.get("json", False)))
 
 
-@main.command()
+@cli.command()
 @click.argument("target")
 @click.option(
     "-p", "--ports", default="1-1000", help="Port range (e.g., 80,443 or 1-1000)"
@@ -274,7 +252,7 @@ def nmap(
             result = run(cmd, capture_output=True, text=True)
 
             # Parse results
-            open_ports = []
+            open_ports: list[dict[str, object]] = []
             for line in result.stdout.splitlines():
                 if "open" in line and "/tcp" in line or "/udp" in line:
                     parts = line.split()
@@ -325,7 +303,7 @@ def nmap(
                 console.print(f"[red]Error: {e}[/red]")
 
 
-@main.command()
+@cli.command()
 @click.option("--live", is_flag=True, help="Live recording (press Enter to stop)")
 @click.pass_context
 def transcribe(ctx: click.Context, live: bool):
@@ -339,46 +317,25 @@ def transcribe(ctx: click.Context, live: bool):
         audio_file = recorder.stop()
         console.print("[yellow]Recording stopped[/yellow]")
     else:
-        with Progress() as progress:
-            task = progress.add_task(
-                f"[cyan]Recording for {duration}s...", total=duration
-            )
-            recorder.start()
-            for i in range(duration):
-                asyncio.run(asyncio.sleep(1))
-                progress.update(task, advance=1)
-            audio_file = recorder.stop()
+        recorder.start()
+        audio_file = recorder.stop()
 
     # Transcribe
-    with (
-        console.status("[cyan]Transcribing...[/cyan]")
-        if not json_mode
-        else nullcontext()
-    ):
-        result = Groq().audio.transcriptions.create(
-            model="whisper-large-v3-turbo",
-            audio=audio_file,
-            response_format="verbose_json",
-        )
-        print(
-            json.dumps(
-                {
-                    "text": result.text,
-                    "language": result.language,
-                    "segments": result.segments,
-                }
+    with console.status("[cyan]Transcribing...[/cyan]"):
+        with open(audio_file, "rb") as f:
+            result = gq.audio.transcriptions.create(
+                model="whisper-large-v3-turbo",
+                file=f.read(),
+                response_format="verbose_json",
             )
-        )
-        console.print(
-            Panel(result.text, title="📝 Transcription", border_style="green")
-        )
-
-        if result.segments:
-            console.print(f"\n[dim]Detected language: {result.language}[/dim]")
+            print(json.dumps({"text": result.text}))
+            console.print(
+                Panel(result.text, title="📝 Transcription", border_style="green")
+            )
     Path(audio_file).unlink()
 
 
-@main.command()
+@cli.command()
 @click.pass_context
 def batch(ctx: click.Context):
     """🔄 Run batch operations from hosts file"""
@@ -389,9 +346,13 @@ def batch(ctx: click.Context):
         return
 
     async def run_all():
-        tasks = []
+        tasks: list[asyncio.Task[tp.Any]] = []
         for host in HOSTS:
-            tasks.append(arun_http(host, 1000, 10, ctx.obj.get("json", False)))
+            tasks.append(
+                asyncio.create_task(
+                    arun_http(host, 1000, 10, ctx.obj.get("json", False))
+                )
+            )
         await asyncio.gather(*tasks)
 
     if not ctx.obj.get("json"):
@@ -400,8 +361,5 @@ def batch(ctx: click.Context):
     asyncio.run(run_all())
 
 
-# Helper context manager
-from contextlib import nullcontext
-
 if __name__ == "__main__":
-    main()
+    cli()

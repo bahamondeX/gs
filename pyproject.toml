@@ -25,4 +25,4 @@ classifiers = [
 ]
 
 [project.scripts]
-gs = "anti_gaslighting.gs:main"
+gs = "anti_gaslighting.cli:cli"
